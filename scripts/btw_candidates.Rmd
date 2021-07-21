@@ -1,0 +1,766 @@
+---
+title: "Chancellor candidate comparison"
+output:
+  md_document:
+    variant: gfm
+number_sections: yes
+---
+# Chancellor candidate comparison
+
+Merkel is one of the most prominent figures in international politics. Her successor, whoever they may be, will have the power to shape global politics just as much. So let’s look at the candidates' track records. We analyzed:
+
+- which words each candidate uses more often than others in parliamentary speeches
+- how each candidate voted on various issues in parliament, and how these votes compare to Merkel's
+
+*In this repository, you will find the methodology, data and code behind the story that came out of this analysis.*
+
+**Read the full article on DW:** [English](https://www.dw.com/a-58261469) | [German](https://www.dw.com/a-58261954)
+
+**Story by:** [Kira Schacht](https://www.twitter.com/daten_drang)
+
+
+# Files
+
+| Name | Content |
+|---|---|
+| `btw_candidates.Rmd`	| The main R markdown script. Run in RStudio to reproduce this analysis. |
+|`data.RData` | The R Data file containing the imported datasets. Use if csv import doesn't work. |
+|`data/...` | Data files |
+
+
+# Data sources
+
+Data on voting behaviour is taken from the [Abgeordnetenwatch.de API](https://www.abgeordnetenwatch.de/api).
+
+Parliamentary speeches of the candidates are downloaded from:
+
+1. https://www.bundestag.de/services/opendata 
+2. https://www.landtag.nrw.de/home/dokumente_und_recherche/parlamentsdatenbank/
+3. https://www.buergerschaft-hh.de/parldok/formalkriterien
+
+# Analysis
+
+Here is a step-by-step-explanation of the code we used in this analysis. You can explore it yourself by opening `btw_candidates.Rmd` in RStudio.
+
+```{r setup, echo = FALSE}
+#Setup
+
+knitr::opts_chunk$set(echo = FALSE)
+#load packages and DW colours
+
+# set locale
+Sys.setlocale("LC_ALL", "de_DE")
+Sys.setenv(LANG = "de_DE.UTF-8")
+
+knitr::opts_knit$set(root.dir = "/Users/schachtk/Documents/DW/283_287_btw_candidates")
+needs(tidyverse,jsonlite,dwplot,rvest,pdftools,ggbeeswarm)
+
+dw_gradient = c("blau6" = "#002d5a", "blau5" = "#004887", "blau4" = "#0064b4", "blau3" = "#007acd", "blau2" = "#008fe6", "blau1" = "#00a5ff", "gelb" = "#f0c80f", "orangegelb" = "#f0aa00", "Hellorange" = "#ee8c0a", "Orange" = "#eb6e14", "Orangerot" = "#d44820", "rot" = "#be232d")
+dw_info = c("hellblau" = "#00a5ff", "dunkelblau" = "#002d5a", "orangerot" = "#EE8C0A",
+            "grün" = "#96be00", "rot" = "#be232d", "gelb" = "#f0c80f")
+```
+
+# 1. Similarity in voting behaviour
+
+Data from [Abgeordnetenwatch.de API](https://www.abgeordnetenwatch.de/api) extracted in early June 2021. The latest votes included are from 19th May 2021.
+
+## 1.1 Get voting data
+
+### get list of votes by poll and candidate 
+
+```{r}
+# Get politician IDs
+candidates = c("baerbock" = 79475, "laschet" = 130072, "scholz" = 66924, "merkel" = 79137)
+
+# Construct API URLs
+urls = paste0("https://www.abgeordnetenwatch.de/api/v2/votes?mandate[entity.politician]=",candidates,"&range_end=500")
+
+votes = vector("list", length = length(candidates))
+for(i in 1:length(candidates)){
+  tmp = urls[i] %>% fromJSON()
+  
+  votes[[i]] = tmp[["data"]][["poll"]] %>% select(id, label) %>%
+    bind_cols(vote = tmp[["data"]][["vote"]],
+              candidate = names(candidates)[i])
+};rm(tmp,i)
+votes = bind_rows(votes)
+
+save.image("scripts/data.RData")
+```
+
+Number of polls by candidate:
+```{r}
+votes %>% group_by(candidate) %>% summarise(n=n(), .groups = "drop") %>% knitr::kable()
+```
+
+Share of polls by candidate and response:
+```{r}
+table(votes$candidate, votes$vote) %>% prop.table(.,1) %>% round(.,2) %>% knitr::kable(digits = 2)
+```
+
+### get details on polls
+
+```{r include=FALSE}
+urls = votes$id %>% unique %>% sort %>% paste0("https://www.abgeordnetenwatch.de/api/v2/polls/",.)
+
+polls = vector("list", length = length(urls))
+
+for(i in 1:length(urls)){
+  if(i %% 10 == 0) cat(i, "of", length(urls),"\n")
+  polls[[i]] = urls[i] %>% fromJSON()
+};rm(i,urls)
+
+save.image("scripts/data.RData")
+
+# join data in data frame
+polls = tibble(polls = polls) %>%
+  unnest_wider(polls) %>% 
+  unnest_wider(data) %>% 
+  select(-c(1,3,5,7,10))
+
+# make dataset with one row per vote and topic
+poll_topics = unnest_longer(polls, field_topics) %>% 
+  mutate(topic.id = field_topics$id, topic.label = field_topics$label) %>% 
+  select(-field_topics, -field_related_links, -field_intro)
+
+# make dataset with one row per vote, multiple topics saved as list in cell
+polls = polls %>%  
+  hoist(field_topics, topic.id = "id", topic.label = "label", .simplify = F) %>% 
+  unnest_wider(field_related_links, names_sep = "_") %>% 
+  select(!field_topics)
+
+save.image("scripts/data.RData")
+```
+
+See `btw_candidates.Rmd` for code.
+
+## 1.2 Identify topics that are relevant to DW readers
+
+```{r}
+#which topics are there and how often to they appear?
+poll_topics %>% group_by(topic.id, topic.label) %>% summarise(n = n()) %>%
+  arrange(-n) %>% write.csv2("data/processed/topics.csv", row.names = F)
+```
+
+From the list of voting topics, those relevant to DW audiences are identified manually:
+
+2 coders label each topic independently as either a "DW topic" or a "non-DW topic". They then discuss and resolve any discrepancies.
+
+The list of topics identified as DW topics in this way is:
+
+- 17	Entwicklungspolitik (development policy)
+- 20	Energie (energy)
+- 43	Menschenrechte (human rights)
+- 48	Naturschutz (nature conservation)
+- 35	Frauen (women)
+- 4	Europapolitik und Europäische Union (European policy and European Union)
+- 9	Umwelt (environment)
+- 11	Außenwirtschaft (foreign trade)
+- 13	Verteidigung (defense)
+- 21	Außenpolitik und internationale Beziehungen (foreign policy and international relations)
+- 25	Ausländerpolitik, Zuwanderung (immigration policy)
+- 33	Humanitäre Hilfe (humanitarian aid)
+
+### how often has each candidate voted/abstained per topic?
+
+```{r}
+# add DW topic labels to datasets
+dw_topics = c(4, 9, 11, 13, 17, 20, 21, 25, 33, 35, 43, 48)
+
+poll_topics = poll_topics %>% mutate(dw_topic = topic.id %in% dw_topics)
+#append to polls
+polls = polls %>% mutate(dw_topic = sapply(topic.id, function(x) any(x %in% dw_topics)))
+
+save.image("scripts/data.RData")
+```
+
+
+```{r}
+poll_topics %>% group_by(dw_topic) %>% summarise(n = id %>% unique %>% length) %>% knitr::kable()
+```
+
+Around half of all polls fall into DW topics.
+
+All votes that concern DW topics are then labeled manually to identify which specific issues they concern and what stance on these issues a "yes" vote on the poll conveys.
+
+```{r}
+#write poll data into csv
+polls %>%
+  mutate(topic.id = sapply(topic.id, toString),
+         topic.label = sapply(topic.label, toString),
+         field_intro = gsub("^<p>\r\n\t|\r\n<\\/p>\r\n$","",field_intro) %>% gsub("[\r\n\t]"," ",.),
+         field_related_links_uri = sapply(field_related_links_uri, toString),
+         field_related_links_title = sapply(field_related_links_title, toString)) %>%
+  write_csv2("data/processed/polls.csv")
+```
+
+
+## 1.3 Manual labeling of issues
+
+
+
+The manual content analysis was conducted as follows:
+
+### generating keywords / issues related to the polls
+
+3 coders read the polls labeled `dw_topic == TRUE` and created a list of 10-20 key issues the polls relate to. The 3 lists are then compared, discussed and consolidated into one list.
+
+The 15 key issues identified in this way are:
+
+```{r}
+keywords = read_csv2("data/processed/Polls_final_keywords.csv", col_types = "cnc")
+
+keywords %>% knitr::kable()
+```
+
+Polls could also be labeled as concerning neither of the 15 key issues (`-99` = Nicht zutreffend) or as too complex to discern whether a "yes"-vote can be counted as a stance pro or contra any of the issues (`-90` = Zu komplex).
+
+### label polls
+
+2 coders independently assigned each poll to up to 3 of the key issued identified in the previous step. For each poll and issue, they also note whether a "yes"-vote in the poll indicates a stance for or against the issue. The labels are then compared and discrepancies discussed and consolidated.
+
+```{r message=FALSE}
+polls_labeled = read_csv2("data/processed/Polls_final.csv") %>%
+  select(dw_topic, id, zuwenig, zuweit, schlagworte) %>% 
+  filter(dw_topic) %>% select(-dw_topic) %>% 
+  separate_rows(schlagworte,sep = ",") %>% 
+  separate(schlagworte, c("keyword","pro.contra"),sep = ":",  fill = "right") %>% 
+  mutate(keyword = as.numeric (keyword))
+
+table(polls_labeled$keyword)
+
+polls_labeled = polls_labeled %>% filter(keyword > 0)
+```
+
+9 polls were labeled as too complex to include (`-90`), 25 didn't have anything to do with the selected key topics (`-99`). Those are excluded from the analysis.
+
+### get stance on issues from voting result
+
+Column `vote = {"yes", "no", "abstain", "no_show"}` records how the candidate voted (Source: Abgeordetenwatch API). Column `pro.contra = {0,1}` records whether a "yes" vote means the candidate voted for (`1`) or against (`0`) the labeled key issue (Source: manual labeling).
+
+`stance` then records the stance indicated by the vote (TRUE if the candidate supports the issue with this vote, FALSE if they don't)  as follows:
+
+- `vote = yes` AND `pro.contra = 1` --> `TRUE`
+- `vote = yes` AND `pro.contra = 0` --> `FALSE`
+- `vote = no` AND `pro.contra = 1` --> `FALSE`
+- `vote = no` AND `pro.contra = 0` --> `TRUE`
+- `vote = abstain` OR `vote = no_show` --> N/A
+
+To allow a solid basis of comparison between candidates, stances are included in the following analysis if:
+
+- at least two different candidates (incl. Merkel) have participated in at least one vote on the issue and
+- the individual candidate has participated in more than one vote on it
+
+For each issue, the candidate's stance is calculated as the share of votes that supported the issue.
+
+```{r message=FALSE}
+stances = votes %>%
+  right_join(polls_labeled, by = "id") %>% #merge labels to votes
+  mutate(stance = ifelse(vote == "yes", TRUE, #calculate stance per vote
+                         ifelse(vote == "no", FALSE, NA)) == (pro.contra > 0)) %>%
+  group_by(keyword, candidate) %>% #sum up stance per issue and candidate
+  summarise(n_yes = sum(stance, na.rm=T), total = sum(!is.na(stance)),
+            approval = n_yes/total) %>% 
+  left_join(keywords, by = c("keyword"="code")) %>% #join issue labels
+  group_by(keyword) %>% 
+  filter((sum(total > 0) > 1) & total > 1) %>% #filter for inclusion criteria
+  mutate(label = factor(label), candidate = factor(candidate))
+
+#refactor for plotting
+stances$label = factor(stances$label, levels = levels(stances$label)[c(5,6,3,4,10,9,1,2,7,8)] %>% rev)
+stances$candidate = factor(stances$candidate, levels = levels(stances$candidate)[c(2,1,4,3)])
+
+write.csv2(stances, "data/processed/stances.csv")
+
+save.image("scripts/data.RData")
+```
+
+
+### create approval plot for each issue group
+
+```{r}
+for(i in 1:(stances$group %>% unique %>% length)){
+  
+  group_i = unique(stances$group)[i]
+  
+  plot = ggplot(stances %>% filter(group == group_i),
+       aes(approval, label, size = ifelse(total > 20, 20, total), color = candidate)) +
+  geom_point(alpha = .8) +
+  scale_colour_manual(values = dw_info[c(2,4,1,3)] %>% unname) +
+  scale_size(range = c(10,60)) +
+  scale_x_continuous(limit = c(0,1), labels = scales::percent) +
+  theme_minimal() +
+  theme(panel.grid.minor.x = element_blank()) +
+  labs(title = "How do the chancellor candidates vote?",
+       description = "share of votes that support different key issues") +
+  theme_dw() +
+  guides(size=F, color = guide_legend(override.aes = list(size = 15)))
+
+finalise_dwplot(plot, "Source: Abgeordnetenwatch | github.com/dw-data", 
+                paste0("graphics/preliminary/btw_candidates_stances_",group_i,".png"),
+                "png", width_pixels=1920,
+                height_pixels = ifelse(group_i == "Umwelt",1920,1280))
+finalise_dwplot(plot, "Source: Abgeordnetenwatch | github.com/dw-data", 
+                paste0("graphics/preliminary/btw_candidates_stances_",group_i,".svg"),
+                "svg", width_pixels=1920,
+                height_pixels = ifelse(group_i == "Umwelt",1920,1280))
+}
+
+```
+
+![286_btw_candidates_stances_Umwelt.png](graphics/final/png/286_btw_candidates_stances_Umwelt.png)
+
+# 2. Speeches
+
+The candidates have given speeches in 3 different parliaments. To get data on all speeched, we proceeded as follows:
+
+*Bundestag (Annalena Baerbock ab 2013, Olaf Scholz 2005-2011):*
+
+1. Download XML data from https://www.bundestag.de/services/opendata 
+2. Filter for candidate's speeches
+
+
+*Landtag NRW (Armin Laschet):*
+
+1. Find a list of speeches in the parliamentary databases and download it as a HTML document.
+  - URL: "https://www.landtag.nrw.de/home/dokumente_und_recherche/parlamentsdatenbank/Suchergebnisse_Ladok.html?dokart=PLENARPROTOKOLL&redner=LASCHET%2C+ARMIN*&view=detail&allOnPage=true&wp=17"
+  - Go through the pages for wp=14 through wp=17
+  - Save each as a HTML file
+3. Convert the PDF documents to text and save
+4. Filter for candidate's speeches
+
+
+*Hamburgische Bürgerschaft (Olaf Scholz):*
+
+1. Find a list of speeches in the parliamentary databases and download it as a HTML document.
+  - URL: "Formalkriterien"-search under "https://www.buergerschaft-hh.de/parldok/formalkriterien"
+  - For Wahlperiode 19 and 20, choose "Urheber (Personen): Scholz, Olaf" and tick "Reden".
+  - Save each as a HTML file
+3. Convert the PDF documents to text and save
+4. Filter for candidate's speeches
+
+## 2.1 Download PDF files
+
+### make list of PDF links
+
+```{r eval=FALSE, include=FALSE}
+
+pdflinks_nrw = list.files("data/raw/speeches/urls/nrw", full.names = T) %>% 
+  lapply(., function(url){
+    read_html(url) %>% html_nodes('br+ span a') %>% html_attr("href")
+  }) %>% do.call("c",.) %>% 
+  ifelse(grepl("^http",.), ., paste0("https://www.landtag.nrw.de",.))
+
+pdflinks_hh = list.files("data/raw/speeches/urls/hh", full.names = T, pattern = "_hh_") %>% 
+  lapply(., function(url){
+    read_html(url) %>% html_nodes('#parldokresult a') %>% html_attr("href")
+  }) %>% do.call("c",.) %>% 
+  paste0("https://www.buergerschaft-hh.de",.)
+
+
+pdflinks = c(pdflinks_nrw, pdflinks_hh); rm(pdflinks_nrw, pdflinks_hh)
+
+```
+
+### convert PDFs to text and save
+
+```{r eval=FALSE, include=FALSE}
+#convert PDFs to text and write to file
+#split each page into separate lines
+
+for(i in 1:length(pdflinks)){
+   if(i %% 25 == 0) cat(i, "of", length(pdflinks),"\n")
+  
+  pdf_text(pdflinks[i]) %>% strsplit("\n") %>%
+    lapply(., function(page){
+      page %>% as.data.frame %>% setNames("tmp") %>% 
+        #separate the columns whenever there is at least 2 spaces preceded by at least 40 characters
+        separate(tmp, c("col1", "col2"), sep = "(?<=.{40}) {2,}", extra = "merge", fill = "right") %>%
+        #move columns under each other
+        pivot_longer(c(col1, col2), names_to = "tmp", values_to = "txt") %>% 
+        arrange(tmp)
+    }) %>% 
+    #bind into one continuous text
+    bind_rows() %>% `$`(txt) %>% 
+    #write to file
+    write(paste0("data/raw/speeches/txts/",
+                 ifelse(grepl("nrw", pdflinks[i]), "nrw/", "hh/"),
+                 basename(pdflinks[i]),".txt"))
+}
+```
+
+## 2.2 Download XML Files
+
+The parliamentary protocols from the federal parliament are available as XML files [here](https://www.bundestag.de/services/opendata).
+
+```{r eval=FALSE, include=FALSE}
+#download files from parliamentary period 19
+xmllinks = read_lines("data/raw/speeches/xml/pp19-xmllinks.txt")
+#y = paste0("https://www.bundestag.de",x[1]) %>% xmlParse(isURL = TRUE)
+
+xmllinks %>% tail(30) %>% paste0("https://www.bundestag.de",.) %>% 
+  walk2(paste0("data/raw/speeches/xml/pp19-data/", basename(xmllinks %>% tail(30))),
+        download.file, mode = "wb", quiet = T)
+
+```
+
+## 2.3 Read documents and filter for candidate's speeches
+
+### Bundestag parliamentary period 16 to 18 & NRW parliament
+
+See `btw_candidates.Rmd` for code.
+
+```{r eval=FALSE, include=FALSE}
+#initialize regex
+TITLE_BEFORE = '((Vizepr.sident(?:in)?|Alterspr.sident(?:in)?|Pr.sident(?:in)?) xxx[^:]*)'
+TITLE_AFTER = c(
+  PARTY_MEMBER = '\\([^\\(\\)]*\\)',
+  STAATSSEKR = ', Parl\\. Staatssekret.r[^:]*',
+  MINISTER = ', \\w{0,15}[mM]inister[^:\\)\\(]*',
+  WEHRBEAUFTRAGTER = ', Wehrbeauftragter.*',
+  BUNDESKANZLER = ', Bundeskanzler[^:]*',
+  BEAUFTRAGT = ', Beauftragter? der Bundes[^:]*') %>% 
+  paste0(. , collapse = ")|(") %>% paste0("((", . , "))")
+#speaker pattern:
+# - maybe whitespace, then not a "(", followed by either:
+#   - the TITLE_BEFORE and then the speaker name OR
+#   - the speaker name and then any of the TITLE_AFTER
+# - followed by a ":" and maybe whitespace
+SPEAKER_MARK = paste0("\\s*[^\\(](", TITLE_BEFORE, "xxx|(xxx", TITLE_AFTER, ")):\\s*")
+rm(TITLE_BEFORE, TITLE_AFTER)
+
+BEGIN_MARK = "Beginn:? [X\\d]{1,2}.\\d{1,2} Uhr"
+END_MARK = "(\\(Schluss:.\\d{1,2}.\\d{1,2}.Uhr\\).*|Schluss der Sitzung)"
+
+## regex for candidates as speakers
+speakers_candidates = c("Annalena Baerbock", "Olaf Scholz", "Armin Laschet") %>%
+  paste0(. , collapse = "|") %>% paste0("(",.,") ?") %>%
+  gsub("xxx",., SPEAKER_MARK)
+
+##regex for all speakers
+speakers_all = SPEAKER_MARK %>% gsub("xxx","[^:!\\d]{5,140}",.)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+flist = list.files(
+  c("data/raw/speeches/xml/", "data/raw/speeches/txts/nrw"),
+  pattern = "^1[6-8]|^Dokument", full.names = T, recursive = T)
+#nrw17050
+speeches = vector("list", length = length(flist))
+
+
+for(i in i:length(flist)){
+  
+  if(i %% 10 == 0) cat(i, "of", length(flist),"\n")
+  
+  doc = read_file(flist[i])
+  
+  #filter for only lines where parliament is in session
+  BEGIN = str_locate(doc, BEGIN_MARK)[,2]; END = str_locate(doc, END_MARK)[,1]
+  if(!is.na(BEGIN) & !is.na(END)) doc = substr(doc, BEGIN, END)
+  
+  doc = doc %>% 
+    gsub("\\s.*Deutscher Bundestag.+\\s+((\\(.+\\)\\s+)+)?","",.,perl=T) %>%
+    gsub("\\-\\s+","",.,perl=T) %>% #get rid of mid-word line breaks
+    gsub("NA","\n",.,perl=T) %>% #get rid of NA lines
+    gsub("(?<![\\s:\\.])[\n\r]{1,2}"," ",.,perl=T) #get rid of mid-sentence line breaks
+  
+  
+  #find match positions
+  # 1.1 find candidate match positions
+  cand_pos = doc %>% str_locate_all(., speakers_candidates) %>% `[[`(1) %>% `[`(,2)
+  # 1.2 extract candidate names
+  cand_name = doc %>% str_extract_all(., speakers_candidates) %>% `[[`(1) %>% trimws()
+  # 2. find next speaker
+  next_pos = doc %>% str_sub(cand_pos) %>% str_locate(., speakers_all) %>% `[`(,1)
+  
+  
+  #extract speech parts
+  speech_snippets = doc %>% str_sub(cand_pos, cand_pos+next_pos-1)
+  speeches[[i]] =
+    data.frame(cand_name, speech_snippets, stringsAsFactors = F)
+
+  if(i %% 50 == 0) {
+    save.image("scripts/data-speeches.RData")
+  } 
+  
+}
+rm(BEGIN, END, doc, cand_pos, cand_name, next_pos, speech_snippets, i)
+
+#get info from file names about parliament and session
+names(speeches) = basename(flist) %>%
+  gsub("Dokument\\?Id\\=MMP|\\.xml|\\|.+$","",.) %>% 
+  sapply(., function(el) rep("0",max(0,8-nchar(el))) %>%
+           paste0(collapse = "") %>% gsub("\\%2F",.,el), USE.NAMES = F)
+names(speeches) = ifelse(grepl("Dokument", basename(flist)),
+                         paste0("nrw",names(speeches)),
+                         paste0("btw",names(speeches)))
+#bind in data frame
+speeches = bind_rows(speeches, .id = "session")
+rm(SPEAKER_MARK,speakers_all,speakers_candidates,BEGIN_MARK,END_MARK,flist)
+
+
+save.image("scripts/data-speeches.RData")
+```
+
+### Hamburg parliament
+
+See `btw_candidates.Rmd` for code.
+
+```{r eval=FALSE, include=FALSE}
+load("scripts/data-speeches.RData")
+#initialize regex
+
+## regex for start of candidate speech
+speaker_begin = "Erster B.rgermeister Olaf Scholz(\\s\\(.+)?:\\s*"
+
+##regex for end of candidate speech
+speaker_end = ".*[Pp]r.sident.*( \\(.+)?:\\s*"
+```
+
+```{r eval=FALSE, include=FALSE}
+flist = list.files("data/raw/speeches/txts/hh", full.names = T)
+
+speeches_hh = vector("list", length = length(flist))
+
+for(i in 1:length(flist)){
+  
+  if(i %% 10 == 0) cat(i, "of", length(flist),"\n")
+  
+  doc = read_file(flist[i])
+
+  #find match positions
+  # 1.1 find candidate match positions
+  cand_pos = doc %>% str_locate_all(., speaker_begin) %>% `[[`(1) %>% `[`(,2)
+  # 1.2 extract candidate names
+  cand_name = doc %>% str_extract_all(., speaker_begin) %>% `[[`(1) %>% trimws() %>% 
+    gsub("(\\s\\(.+\\))?:\\s*","",.)
+  # 2. find next speaker
+  next_pos = doc %>% str_sub(cand_pos) %>% str_locate(., speaker_end) %>% `[`(,1)
+  
+  
+  #extract speech parts
+  speech_snippets = doc %>%
+    str_sub(cand_pos+1, cand_pos+next_pos-1) %>% 
+    gsub("(\\d+\\s+)?Bürgerschaft der Freien.+\n(\\(.+)?","",.,perl=T) %>%
+    gsub("\\-\\s+","",.,perl=T) %>% #get rid of mid-word line breaks
+    gsub("NA","\n",.,perl=T) #get rid of NA lines
+  
+  speeches_hh[[i]] =
+    data.frame(cand_name, speech_snippets, stringsAsFactors = F)
+  
+}
+rm(doc, cand_pos, cand_name, next_pos, speech_snippets, i)
+
+#get info from file names about parliament and session
+names(speeches_hh) = basename(flist) %>%
+  gsub("plenarprotokoll_|\\.pdf.*$","",.) %>% 
+  sapply(., function(el) rep("0",max(0,6-nchar(el))) %>%
+           paste0(collapse = "") %>% gsub("_",.,el), USE.NAMES = F) %>% 
+  paste0("hh",.)
+#bind in data frame
+speeches_hh = bind_rows(speeches_hh, .id = "session")
+
+rm(speaker_begin,speaker_end)
+
+save.image("scripts/data-speeches.RData")
+```
+
+### Bundestag parliamentary period 19
+
+See `btw_candidates.Rmd` for code.
+
+```{r eval=FALSE, include=FALSE}
+load("scripts/data-speeches.RData")
+
+candidates = c("Annalena Baerbock","Olaf Scholz")
+flist = list.files("data/raw/speeches/xml/pp19-data", full.names = T)
+
+speeches_bt19 = vector("list", length = length(flist))
+
+for(i in 1:length(flist)){
+  
+  if(i %% 50 == 0) cat(i, "of", length(flist),"\n")
+  
+  #read XML file
+  dat = read_xml(flist[i])
+  
+  #find all speeches where redner > name > vorname + nachname matches∂ candidates
+  speech_match = dat %>%
+    xml_find_all('//rede/p[1]') %>%
+    xml_find_all('.//redner/name/*[self::vorname or self::nachname]') %>%
+    xml_text() %>% matrix(ncol=2, byrow = T) %>% apply(., 1, "paste",collapse = " ") %>%
+    match(., candidates)
+  
+  #get candidate names
+  cand_name = candidates[speech_match[!is.na(speech_match)]]
+  
+  #get all speech paragraphs. criteria:
+  # - contain klasse "J_1", "0" or "J"
+  # - are not the last paragraph (which is an announcement of the next speaker)
+  # - are not the preceded by a name tag (which is a comment or announcement)
+  speech_snippets = dat %>% xml_find_all( '//rede') %>% `[`(!is.na(speech_match)) %>%
+    lapply(., function(speech){
+      speech %>%
+        xml_find_all(.,'./p[(@klasse="J_1" or @klasse="J" or @klasse="0")
+                     and position()<last()
+                     and not(preceding-sibling::name)]') %>% xml_text %>%
+        data.frame(speech_snippets = .)
+    }) %>% 
+    #bind to data frame
+    setNames(., cand_name) %>% bind_rows(, .id = "cand_name")
+  #save in list
+  speeches_bt19[[i]] = speech_snippets
+
+};rm(dat, candidates, speech_match,cand_name,speech_snippets, i)
+
+#get info from file names about parliament and session
+names(speeches_bt19) = basename(flist) %>%
+  gsub("-data.xml","",.) %>% paste0("btw",.)
+#bind in data frame
+speeches_bt19 = bind_rows(speeches_bt19, .id = "session")
+
+rm(flist)
+
+save.image("scripts/data-speeches.RData")
+```
+
+
+## 2.4 Bind all files together and clean
+
+See `btw_candidates.Rmd` for code.
+
+```{r eval=FALSE, include=FALSE}
+load("scripts/data-speeches.RData")
+
+speeches = bind_rows(speeches, speeches_bt19, speeches_hh)
+rm(speeches_bt19,speeches_hh)
+
+candidates = c("Annalena Baerbock","Olaf Scholz","Armin Laschet")
+
+# 1. clean candidate names
+# 2. remove zwischenrufe and anmerkungen
+# 3. remove zwischenzeilen
+speeches = speeches %>% 
+  mutate(cand_name = str_extract(cand_name, paste0(candidates,collapse = "|")),
+         speech_snippets = speech_snippets %>% 
+           gsub("\\([^\\)]+\\)","",.) %>% 
+           gsub("\\s*Plenarprotokoll \\d+\\/\\d+|(Annalena Baerbock|Olaf Scholz|Armin Laschet)\\s+","",.) %>% 
+           gsub("[nN]ordrhein[ -][wW]estfalen","nordrheinwestfalen",.))
+
+
+save.image("scripts/data-speeches.RData")
+```
+
+## 2.5 Text mining
+
+To analyze which words are most characteristic for each candidate, we use a smoothed odds ratio:
+
+We separated their speeches into individual words, removing stopwords (filler words that carry no meaning) and grammar (using the [Snowball stemming algorithm](https://snowballstem.org/algorithms/german/stemmer.html) for German). We then calculated the relative frequency of each word in the candidates' speeches and compared it to its relative frequency in their competitor's speeches. This ratio, with a small constant added to avoid division by zero, is called the "odds ratio" and describes how much more likely a candidate is to use a given word than their competitors are.
+
+If the odds ratio is bigger than 1, the candidate is more likely to use the word than their competitors are, if it is between 0 and 1, they are less likely to use it.
+If the value for "change" is 2, for example, the candidate is twice as likely to use the word "change" than their competitors. If the value is 0.5, they are hald as likely to use it.
+
+For more info on odds ratios, as well as other measures of "characteristic" words, see here:
+
+*Monroe, B., Colaresi, M., & Quinn, K. (2017). Fightin' Words: Lexical Feature Selection and Evaluation for Identifying the Content of Political Conflict. Political Analysis, 16(4), 372-403. doi:10.1093/pan/mpn018* [[Link](http://languagelog.ldc.upenn.edu/myl/Monroe.pdf) ]
+
+See `btw_candidates.Rmd` for the code.
+
+```{r eval=FALSE, include=FALSE}
+load("scripts/data-speeches.RData")
+
+needs(tm,tidytext,ggwordcloud,wordcloud)
+
+words = speeches %>%
+  unnest_tokens(word, speech_snippets, format = "text") %>% 
+  mutate(word = SnowballC::wordStem(word, "de")) %>% #stemming
+  anti_join(get_stopwords("de"), by = "word") %>% #remove stopwords
+  anti_join(get_stopwords("en"), by = "word") %>% 
+  count(cand_name, word) %>% #count occurences
+  filter(!grepl("^[0-9\\,\\.]+$",word)) %>% #remove numbers and dates
+  arrange(cand_name, -n) %>%
+  filter(n > 1) %>% #filter out words that only occur once per candidate
+  group_by(cand_name) %>% mutate(tf = n/sum(n), n_cand = sum(n)) %>% 
+  group_by(word) %>% mutate(tf_others = sum(n)-n) %>% ungroup %>%
+  mutate(tf_others = tf_others/(sum(n)-n_cand),
+         odds_ratio = (tf+.001)/(tf_others+.001)) %>% 
+  select(-n_cand)
+
+#remove names, titles and leftover stopwords manually
+stopwords = c("desweg","verehrt","herzlich","angesproch","wirklich",
+              ".*prasident.*","roth","dank","ja",
+              "frau","asch","minist.*","kolleg.*","lieb","zweit",
+              "insof","moron","edgar","woch","herrn","altenkamp","gebracht",
+              "burgerinn","burg","dafur","dam","diejen","darum","tun","dass") %>% 
+  paste0(., collapse = "|") %>% paste0("^(",.,")$")
+words = words %>% filter(!grepl(stopwords, word))
+
+max_odds = words %>% group_by(cand_name) %>% select(-tf_others) %>% 
+  slice_max(odds_ratio, n = 20)
+
+#unstem for visualization
+max_odds$label_de = c("fossil", "Europa", "Klimaschutz", "Paris", "Bundesregierung", "EU", "CO2", "erneuerbar", "leider", "Kohleausstieg", "Kohle","CSU", "Prozent", "Brandenburg", "Union", "Energie", "Bericht", "national", "Klimapolitik", "Ziel",
+  "Nordrhein-Westfalen", "Landtag", "Landesregierung", "Kommune", "Kind", "Platz", "Eltern", "Köln", "grün", "Fraktion", "Tag", "Antrag", "SPD", "kommunal", "Mensch", "Bildung", "Berlin","sagt","Moment", "rot",
+  "Hamburg", "Stadt", "notwendig", "sorgen", "Zukunft", "Senat", "richtig", "Fortschritt", "Wirtschaft", "groß", "Prozent", "Ausdruck", "gut", "Euro", "Wohnung", "Beitrag", "Arbeitnehmer/in", "Beispiel", "übrig", "Vernunft")
+
+max_odds$label_en = c("fossil", "Europe", "climate protection", "Paris", "federal government", "EU", "CO2", "renewable", "unfortunately", "coal phase-out", "coal", "CSU", "percent", "Brandenburg", "Union", "energy", "report", "national", "climate policy", "target",
+  "North Rhine-Westphalia", "state parliament", "state government", "municipality", "child", "place", "parents", "Cologne", "green", "faction", "day", "application", "SPD", "municipal", "human", "education", "Berlin", "says", "moment", "red",
+  "Hamburg", "city", "necessary", "worry", "future", "senate", "right", "progress", "economy", "great", "percent", "expression", "good", "euro", "apartment", "contribution", "worker", "example", "spare", "reason")
+```
+
+### Make Word clouds
+
+
+```{r eval=FALSE, include=FALSE}
+#German
+
+svglite::svglite("graphics/preliminary/btw_speeches_baerbock_de.svg", width = 1920/72, height = 1920/72)
+with(max_odds %>% filter(cand_name == "Annalena Baerbock"),
+    wordcloud(label_de, odds_ratio, max.words = 20, min.freq = 1,
+              scale=c(15,3), color = dw_gradient[6:1]))
+dev.off()
+
+svglite::svglite("graphics/preliminary/btw_speeches_laschet_de.svg", width = 1920/72, height = 1920/72)
+with(max_odds %>% filter(cand_name == "Armin Laschet"),
+    wordcloud(label_de, odds_ratio, max.words = 20, min.freq = 1,
+              scale=c(15,3), color = dw_gradient[6:1]))
+dev.off()
+
+svglite::svglite("graphics/preliminary/btw_speeches_scholz_de.svg", width = 1920/72, height = 1920/72)
+with(max_odds %>% filter(cand_name == "Olaf Scholz"),
+    wordcloud(label_de, odds_ratio, max.words = 20, min.freq = 1,
+              scale=c(25,5), color = dw_gradient[6:1]))
+dev.off()
+```
+
+
+```{r eval=FALSE, include=FALSE}
+#English
+
+svglite::svglite("graphics/preliminary/btw_speeches_baerbock_en.svg", width = 1920/72, height = 1920/72)
+with(max_odds %>% filter(cand_name == "Annalena Baerbock"),
+    wordcloud(label_en, odds_ratio, max.words = 20, min.freq = 1,
+              scale=c(15,3), color = dw_gradient[6:1]))
+dev.off()
+
+svglite::svglite("graphics/preliminary/btw_speeches_laschet_en.svg", width = 1920/72, height = 1920/72)
+with(max_odds %>% filter(cand_name == "Armin Laschet"),
+    wordcloud(label_en, odds_ratio, max.words = 20, min.freq = 1,
+              scale=c(10,2), color = dw_gradient[6:1]))
+dev.off()
+
+svglite::svglite("graphics/preliminary/btw_speeches_scholz_en.svg", width = 1920/72, height = 1920/72)
+with(max_odds %>% filter(cand_name == "Olaf Scholz"),
+    wordcloud(label_en, odds_ratio, max.words = 20, min.freq = 1,
+              scale=c(25,5), color = dw_gradient[6:1]))
+dev.off()
+```
+
+
+![283_btw_candidates_Baerbock_EN.png](graphics/final/png/283_btw_candidates_Baerbock_EN.png)
+
+![284_btw_candidates_Laschet_EN.png](graphics/final/png/284_btw_candidates_Laschet_EN.png)
+
+![285_btw_candidates_Scholz_EN.png](graphics/final/png/285_btw_candidates_Scholz_EN.png)
