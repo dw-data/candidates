@@ -23,8 +23,8 @@ Schacht](https://www.twitter.com/daten_drang)
 
 | Name                 | Content                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
-| `btw_candidates.Rmd` | The main R markdown script. Run in RStudio to reproduce this analysis.            |
-| `data.RData`         | The R Data file containing the imported datasets. Use if csv import doesn’t work. |
+| `scripts/btw_candidates.Rmd` | The main R markdown script. Run in RStudio to reproduce this analysis.            |
+| `scripts/data.RData`         | The R Data file containing the imported datasets. Use if csv import doesn’t work. |
 | `data/...`           | Data files                                                                        |
 
 # Data sources
